@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ko">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width,initial-scale=1" />
+	<title>두 플레이어 총게임 (Single File)</title>
+	<style>
+		:root{--bg:#222;--panel:#111;--text:#eee}
+		html,body{height:100%;margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}
+		#app{position:relative;height:100vh;display:flex;flex-direction:column;align-items:stretch}
+		canvas{display:block;width:100%;height:100%;}
+		.ui{position:absolute;left:12px;top:12px;z-index:30;background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);padding:8px;border-radius:8px}
+		.controls{position:absolute;right:12px;bottom:12px;z-index:40;background:rgba(0,0,0,0.45);padding:10px;border-radius:8px;display:flex;flex-direction:column;gap:8px}
+		button{background:#333;color:#fff;border:1px solid #555;padding:8px 10px;border-radius:6px;cursor:pointer}
+		button:active{transform:translateY(1px)}
+		.big{font-size:1.1rem;padding:10px 12px}
+		.status{font-size:14px;margin-bottom:6px}
+		.center-note{position:absolute;left:50%;top:8px;transform:translateX(-50%);z-index:35;background:rgba(0,0,0,0.45);padding:6px 10px;border-radius:8px}
+		/* color selection modal */
+		#colorSelect{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:60;background:#0b0b0b;padding:16px;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.6);min-width:320px}
+		.colors{display:flex;gap:12px;margin:10px 0}
+		.colorBtn{flex:1;height:64px;border-radius:8px;border:2px solid #222;cursor:pointer}
+		#overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:50}
+		.footer-hint{position:absolute;left:12px;bottom:12px;font-size:13px;opacity:0.9}
+	</style>
+</head>
+<body>
+	<div id="app">
+		<canvas id="canvas"></canvas>
+
+		<div class="center-note" id="message">게임을 시작합니다</div>
+
+		<div class="ui" id="info">
+			<div class="status"><strong>턴:</strong> <span id="turnLabel">플레이어 1</span></div>
+			<div class="status"><strong>남은 쏘기:</strong> <span id="shotLeft">10</span></div>
+			<div class="status"><strong>이번 총알 개수:</strong> <span id="curBullets">-</span></div>
+			<div class="status"><strong>점수:</strong> P1 <span id="score1">0</span> | P2 <span id="score2">0</span></div>
+		</div>
+
+		<div class="controls" id="controls">
+			<button id="aimUp" class="big">조준 ↑ (위)</button>
+			<button id="aimDown" class="big">조준 ↓ (아래)</button>
+			<button id="shoot" class="big">발사</button>
+			<button id="restart">다시 시작</button>
+		</div>
+
+		<div class="footer-hint">아래가 P1(당신), 위가 P2(상대). 색을 먼저 선택하세요.</div>
+
+		<div id="overlay"></div>
+		<div id="colorSelect">
+			<div style="font-weight:700">배경 색상 선택 (둘 중에서 하나를 고르세요)</div>
+			<div class="colors" id="colorOptions"></div>
+			<div style="font-size:13px;color:#bbb">선택한 색이 아래(플레이어1) 배경, 다른 색은 위(플레이어2) 배경으로 설정됩니다.</div>
+		</div>
+	</div>
+
+	<script>
+		// 기본 설정
+		const canvas = document.getElementById('canvas');
+		const ctx = canvas.getContext('2d');
+
+		let W, H, half;
+		function resize(){
+			canvas.width = window.innerWidth;
+			canvas.height = window.innerHeight;
+			W = canvas.width; H = canvas.height; half = H/2;
+			drawScene();
+		}
+		window.addEventListener('resize', resize);
+		resize();
+
+		// DOM
+		const turnLabel = document.getElementById('turnLabel');
+		const shotLeft = document.getElementById('shotLeft');
+		const curBulletsLabel = document.getElementById('curBullets');
+		const score1El = document.getElementById('score1');
+		const score2El = document.getElementById('score2');
+		const messageEl = document.getElementById('message');
+		const overlay = document.getElementById('overlay');
+		const colorSelect = document.getElementById('colorSelect');
+		const colorOptions = document.getElementById('colorOptions');
+
+		const btnAimUp = document.getElementById('aimUp');
+		const btnAimDown = document.getElementById('aimDown');
+		const btnShoot = document.getElementById('shoot');
+		const btnRestart = document.getElementById('restart');
+
+		// 게임 상태
+		let playerColors = ['#1a73e8','#e91e63']; // P1 bottom, P2 top (will be set after selection)
+		let currentPlayer = 1; // 1 or 2
+		let aim = 'up'; // 'up' or 'down' (aim direction of the gun)
+		let scores = {1:0,2:0};
+		let totalShots = 10; // 총 발사 기회 수
+		let shotsTaken = 0; // 사용된 발사 수
+		let shotSequence = []; // 10개의 탄 수 시퀀스
+		let animating = false;
+
+		function randChoice(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+		// 총알 시퀀스: 이제 0(빈 장전)도 포함합니다.
+		function generateSequence(){
+			// 0 포함: 한 번의 발사에서 총알이 없을 수도 있음
+			const choices = [0, 1, 3, 5, 7, 9];
+			shotSequence = [];
+			for(let i = 0; i < totalShots; i++) shotSequence.push(randChoice(choices));
+		}
+
+		// 초기 색상 선택 UI (2개의 랜덤 색 보여주기)
+		function showColorOptions(){
+			// generate two visually-distinct colors
+			function randomColor(){
+				const h = Math.floor(Math.random()*360);
+				const s = 60 + Math.random()*30;
+				const l = 45 + Math.random()*10;
+				return `hsl(${h} ${s}% ${l}%)`;
+			}
+			let c1 = randomColor(); let c2 = randomColor();
+			// ensure they aren't very close
+			colorOptions.innerHTML = '';
+			[c1,c2].forEach((c,idx)=>{
+				const b = document.createElement('div'); b.className='colorBtn'; b.style.background=c; b.addEventListener('click',()=>selectColor(idx));
+				colorOptions.appendChild(b);
+			});
+			overlay.style.display='block'; colorSelect.style.display='block';
+		}
+		function hideColorOptions(){ overlay.style.display='none'; colorSelect.style.display='none'; }
+
+		function selectColor(index){
+			const cols = Array.from(colorOptions.children).map(el=>getComputedStyle(el).backgroundColor);
+			// set colors: clicked -> P1 bottom; other -> P2 top
+			playerColors[0] = cols[index];
+			playerColors[1] = cols[1-index];
+			hideColorOptions();
+			messageEl.textContent = '게임 시작!';
+			startGame();
+		}
+
+		// 그리기
+		function drawScene(){
+			ctx.clearRect(0,0,W,H);
+			// top area (P2)
+			ctx.fillStyle = playerColors[1]; ctx.fillRect(0,0,W,half);
+			// bottom area (P1)
+			ctx.fillStyle = playerColors[0]; ctx.fillRect(0,half,W,half);
+
+			// dividing line
+			ctx.strokeStyle='rgba(0,0,0,0.25)'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(0,half); ctx.lineTo(W,half); ctx.stroke();
+
+			// draw players as simple rectangles near edges
+			const pHeight = 60, pWidth = 120;
+			// top player center
+			ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect((W-pWidth)/2, 20, pWidth, pHeight);
+			ctx.fillStyle = '#fff'; ctx.font='16px sans-serif'; ctx.textAlign='center'; ctx.fillText('플레이어 2', W/2, 20+pHeight/2+6);
+
+			// bottom player
+			ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect((W-pWidth)/2, H-20-pHeight, pWidth, pHeight);
+			ctx.fillStyle = '#fff'; ctx.fillText('플레이어 1', W/2, H-20-pHeight + pHeight/2 +6);
+
+			// draw gun at center
+			drawGun();
+		}
+
+		function drawGun(){
+			const gx = W/2, gy = H/2;
+			// barrel
+			ctx.save(); ctx.translate(gx,gy);
+			ctx.fillStyle = '#222'; ctx.strokeStyle='#000';
+			ctx.beginPath(); ctx.roundRect(-10,-10,20,20,4); ctx.fill();
+			// muzzle direction
+			ctx.fillStyle='#444';
+			if(aim==='up') ctx.fillRect(-4,-40,8,30);
+			else ctx.fillRect(-4,10,8,30);
+			ctx.restore();
+		}
+
+		// basic helper to draw rounded rect (polyfill)
+		CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
+			if (typeof r === 'undefined') r = 6;
+			this.beginPath();
+			this.moveTo(x + r, y);
+			this.arcTo(x + w, y, x + w, y + h, r);
+			this.arcTo(x + w, y + h, x, y + h, r);
+			this.arcTo(x, y + h, x, y, r);
+			this.arcTo(x, y, x + w, y, r);
+			this.closePath();
+			return this;
+		};
+
+		// 발사 애니메이션과 히트 판정
+		function fire(bulletCount, shooter){
+			if(animating) return;
+			animating = true;
+			const bullets = [];
+			const startX = W/2, startY = H/2;
+			const dir = aim === 'up' ? -1 : 1; // -1 up, 1 down
+			// create bullets with slight horizontal spread
+			for(let i=0;i<bulletCount;i++){
+				const spread = (i - (bulletCount-1)/2) * 12; // spacing
+				bullets.push({x:startX + spread, y:startY, vx: spread*0.02, vy: dir * (6 + Math.random()*2), r:6});
+			}
+
+			let hitTarget = false; // was the opponent hit
+			let hitSelf = false;
+
+			function step(){
+				// advance
+				ctx.clearRect(0,0,W,H);
+				drawScene();
+				// draw bullets
+				for(const b of bullets){
+					b.x += b.vx; b.y += b.vy;
+					ctx.beginPath(); ctx.fillStyle='yellow'; ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill();
+					// detect collisions with top/bottom player zones
+					if(b.y - b.r <= 0 || b.y + b.r >= H) continue; // out of bounds
+					if(b.y <= half && currentPlayer !== 2){
+						// bullets reached top zone; top is player2
+						if(dir < 0 && !hitTarget){ hitTarget = true; }
+						if(dir > 0 && !hitSelf){ hitSelf = true; }
+					}
+					if(b.y >= half && currentPlayer !== 1){
+						// bullets reached bottom zone
+						if(dir > 0 && !hitTarget){ hitTarget = true; }
+						if(dir < 0 && !hitSelf){ hitSelf = true; }
+					}
+					// simpler direct detection: if a bullet crosses into the other half
+					if(dir<0 && b.y < 60) { if(currentPlayer===1) { hitTarget = true; } else { hitSelf = true; } }
+					if(dir>0 && b.y > H-60) { if(currentPlayer===2) { hitTarget = true; } else { hitSelf = true; } }
+				}
+
+				// stop condition: all bullets out of bounds or passed far
+				const anyActive = bullets.some(b=> b.y> -50 && b.y < H+50);
+				if(anyActive) requestAnimationFrame(step);
+				else finishShot();
+			}
+
+			function finishShot(){
+				animating = false;
+				shotsTaken++;
+				shotLeft.textContent = Math.max(0, totalShots - shotsTaken);
+
+				// Determine hit/miss and apply rules
+				// We interpret hitTarget as bullets hitting the opponent, hitSelf as hitting yourself.
+				if(currentPlayer === 1){
+					if(aim === 'down'){
+						if(hitSelf){ scores[1] -= 1; messageEl.textContent = '아차! 자신을 맞췄습니다. -1점'; currentPlayer = 2; }
+						else { messageEl.textContent = '빗나갔습니다. 기회 유지'; }
+					} else { // aim up
+						if(hitTarget){ scores[2] -= 1; messageEl.textContent = '명중! 상대 -1점, 기회 유지'; }
+						else { messageEl.textContent = '빗나갔습니다. 턴 교체'; currentPlayer = 2; }
+					}
+				} else { // currentPlayer == 2
+					if(aim === 'up'){
+						if(hitSelf){ scores[2] -= 1; messageEl.textContent = '아차! 자신을 맞췄습니다. -1점'; currentPlayer = 1; }
+						else { messageEl.textContent = '빗나갔습니다. 기회 유지'; }
+					} else { // aim down (toward player1)
+						if(hitTarget){ scores[1] -= 1; messageEl.textContent = '명중! 상대 -1점, 기회 유지'; }
+						else { messageEl.textContent = '빗나갔습니다. 턴 교체'; currentPlayer = 1; }
+					}
+				}
+
+				updateStatus();
+				// check end
+				if(shotsTaken >= totalShots){ endGame(); }
+			}
+
+			requestAnimationFrame(step);
+		}
+
+		function updateStatus(){
+			turnLabel.textContent = `플레이어 ${currentPlayer}`;
+			score1El.textContent = scores[1];
+			score2El.textContent = scores[2];
+			// 현재 남은 발사 횟수에 해당하는 장전 수(0일 수 있음)를 표시
+			curBulletsLabel.textContent = shotsTaken < totalShots ? String(shotSequence[shotsTaken]) : '-';
+		}
+
+		function endGame(){
+			// 더 많이 감점된 사람이 지게 된다 => 더 낮은 점수가(더 음수)면 지는 사람
+			const p1 = scores[1], p2 = scores[2];
+			let resultText = '';
+			if(p1 < p2) resultText = '플레이어 1이 더 많이 감점되어 패배했습니다.';
+			else if(p2 < p1) resultText = '플레이어 2가 더 많이 감점되어 패배했습니다.';
+			else resultText = '무승부입니다.';
+			messageEl.textContent = `게임 종료 — ${resultText}`;
+			btnShoot.disabled = true; btnAimDown.disabled = true; btnAimUp.disabled = true;
+		}
+
+		// 컨트롤 이벤트
+		btnAimUp.addEventListener('click', ()=>{ aim='up'; messageEl.textContent='조준: 위'; drawScene(); });
+		btnAimDown.addEventListener('click', ()=>{ aim='down'; messageEl.textContent='조준: 아래'; drawScene(); });
+		btnShoot.addEventListener('click', ()=>{
+			if(shotsTaken >= totalShots) return;
+			const bullets = shotSequence[shotsTaken];
+			messageEl.textContent = `발사: ${bullets}발...`;
+			fire(bullets, currentPlayer);
+		});
+		btnRestart.addEventListener('click', ()=>{ resetAll(); showColorOptions(); });
+
+		function startGame(){
+			// initialize sequence and UI
+			generateSequence();
+			shotsTaken = 0; scores = {1:0,2:0}; currentPlayer = 1; aim='up'; btnShoot.disabled=false; btnAimDown.disabled=false; btnAimUp.disabled=false;
+			updateStatus(); drawScene();
+		}
+
+		function resetAll(){
+			shotsTaken = 0; scores = {1:0,2:0}; currentPlayer = 1; generateSequence(); updateStatus(); drawScene(); messageEl.textContent='';
+		}
+
+		// 준비: 색상 선택을 먼저 띄움
+		showColorOptions();
+
+		// 초기 draw
+		drawScene();
+	</script>
+</body>
+</html>
