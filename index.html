@@ -17,10 +17,11 @@
 		.status{font-size:14px;margin-bottom:6px}
 		.center-note{position:absolute;left:50%;top:8px;transform:translateX(-50%);z-index:35;background:rgba(0,0,0,0.45);padding:6px 10px;border-radius:8px}
 		/* color selection modal */
-		#colorSelect{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:60;background:#0b0b0b;padding:16px;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.6);min-width:320px}
+		#colorSelect{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:60;background:#0b0b0b;padding:16px;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.6);min-width:320px;display:block}
 		.colors{display:flex;gap:12px;margin:10px 0}
-		.colorBtn{flex:1;height:64px;border-radius:8px;border:2px solid #222;cursor:pointer}
-		#overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:50}
+		.colorBtn{flex:1;height:64px;border-radius:8px;border:2px solid #222;cursor:pointer;display:flex;align-items:center;justify-content:center;font-weight:700;color:#000}
+		.colorBtn:focus{outline:3px solid rgba(255,255,255,0.15)}
+		#overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:50;display:block}
 		.footer-hint{position:absolute;left:12px;bottom:12px;font-size:13px;opacity:0.9}
 	</style>
 </head>
@@ -38,9 +39,9 @@
 		</div>
 
 		<div class="controls" id="controls">
-			<button id="aimUp" class="big">조준 ↑ (위)</button>
-			<button id="aimDown" class="big">조준 ↓ (아래)</button>
-			<button id="shoot" class="big">발사</button>
+			<button id="aimUp" class="big" disabled>조준 ↑ (위)</button>
+			<button id="aimDown" class="big" disabled>조준 ↓ (아래)</button>
+			<button id="shoot" class="big" disabled>발사</button>
 			<button id="restart">다시 시작</button>
 		</div>
 
@@ -106,23 +107,43 @@
 
 		// 초기 색상 선택 UI (2개의 랜덤 색 보여주기)
 		function showColorOptions(){
-			// generate two visually-distinct colors
-			function randomColor(){
-				const h = Math.floor(Math.random()*360);
-				const s = 60 + Math.random()*30;
-				const l = 45 + Math.random()*10;
-				return `hsl(${h} ${s}% ${l}%)`;
+			// generate two visually-distinct colors with enough hue difference
+			function randomColorPair(){
+				const h1 = Math.floor(Math.random()*360);
+				let h2 = (h1 + 60 + Math.floor(Math.random()*180)) % 360; // ensure difference >= 60
+				const s = 65 + Math.random()*20;
+				const l = 45 + Math.random()*8;
+				return [`hsl(${h1} ${s}% ${l}%)`,`hsl(${h2} ${s}% ${l}%)`];
 			}
-			let c1 = randomColor(); let c2 = randomColor();
-			// ensure they aren't very close
+			const [c1,c2] = randomColorPair();
 			colorOptions.innerHTML = '';
 			[c1,c2].forEach((c,idx)=>{
-				const b = document.createElement('div'); b.className='colorBtn'; b.style.background=c; b.addEventListener('click',()=>selectColor(idx));
+				const b = document.createElement('div'); b.className='colorBtn'; b.style.background=c;
+				b.tabIndex = 0;
+				b.textContent = (idx===0? '선택 1':'선택 2');
+				const clickHandler = ()=> selectColor(idx);
+				b.addEventListener('click',clickHandler);
+				// keyboard support for focus+enter
+				b.addEventListener('keydown',(e)=>{ if(e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clickHandler(); }});
 				colorOptions.appendChild(b);
 			});
 			overlay.style.display='block'; colorSelect.style.display='block';
+			messageEl.textContent = '색을 선택하세요 (1 또는 2 키로 선택 가능)';
+			// disable controls until color chosen
+			btnAimUp.disabled = true; btnAimDown.disabled = true; btnShoot.disabled = true;
+
+			// add global key handler for 1/2 selection
+			window._colorKeyHandler = function(e){
+				if(e.key === '1') selectColor(0);
+				if(e.key === '2') selectColor(1);
+			};
+			window.addEventListener('keydown', window._colorKeyHandler);
 		}
-		function hideColorOptions(){ overlay.style.display='none'; colorSelect.style.display='none'; }
+		function hideColorOptions(){
+			overlay.style.display='none'; colorSelect.style.display='none';
+			// remove key handler if present
+			if(window._colorKeyHandler){ window.removeEventListener('keydown', window._colorKeyHandler); window._colorKeyHandler = null; }
+		}
 
 		function selectColor(index){
 			const cols = Array.from(colorOptions.children).map(el=>getComputedStyle(el).backgroundColor);
@@ -130,7 +151,9 @@
 			playerColors[0] = cols[index];
 			playerColors[1] = cols[1-index];
 			hideColorOptions();
-			messageEl.textContent = '게임 시작!';
+			messageEl.textContent = '색이 선택되었습니다. 게임을 시작합니다.';
+			// enable controls now
+			btnAimUp.disabled = false; btnAimDown.disabled = false; btnShoot.disabled = false;
 			startGame();
 		}
 
@@ -295,18 +318,9 @@
 		});
 		btnRestart.addEventListener('click', ()=>{ resetAll(); showColorOptions(); });
 
-		function startGame(){
-			// initialize sequence and UI
-			generateSequence();
-			shotsTaken = 0; scores = {1:0,2:0}; currentPlayer = 1; aim='up'; btnShoot.disabled=false; btnAimDown.disabled=false; btnAimUp.disabled=false;
-			updateStatus(); drawScene();
-		}
-
-		function resetAll(){
-			shotsTaken = 0; scores = {1:0,2:0}; currentPlayer = 1; generateSequence(); updateStatus(); drawScene(); messageEl.textContent='';
-		}
-
 		// 준비: 색상 선택을 먼저 띄움
+		// ensure controls disabled and modal shown
+		btnAimUp.disabled = true; btnAimDown.disabled = true; btnShoot.disabled = true;
 		showColorOptions();
 
 		// 초기 draw
